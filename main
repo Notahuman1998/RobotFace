@@ -1,0 +1,186 @@
+//***********************************************************************************************
+//  This example shows how to use the basic methods of the FluxGarage Robo Eyes library. 
+//
+//  Hardware: You'll need a breadboard, an arduino nano r3, an I2C oled display with 1306   
+//  or 1309 chip and some jumper wires.
+//  
+//  Published in September 2024 by Dennis Hoelscher, FluxGarage
+//  www.youtube.com/@FluxGarage
+//  www.fluxgarage.com
+//
+//***********************************************************************************************
+
+
+#include <Adafruit_SSD1306.h>
+#include <FluxGarage_RoboEyes.h>
+
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 64 // OLED display height, in pixels
+// Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
+#define OLED_RESET     -1 // Reset pin # (or -1 if sharing Arduino reset pin)
+
+const int BUTTON_PIN = 32;
+const int MIC_PIN = 35; // Connect MAX9814 OUT to 35
+
+int count = 0;
+struct touchEvent { 
+	 byte wasPressed = LOW; 
+	 byte isPressed = LOW; 
+}; 
+touchEvent touch; 
+
+// --- AUDIO SETTINGS ---
+unsigned long scareTimer = 0; 
+bool isScared = false;
+
+// SENSITIVITY SETTING
+// For MAX9814, a clap usually creates a spike > 200 or 300.
+// If it triggers too easily, increase this number (e.g., 500).
+// If it doesn't trigger, decrease it (e.g., 150).
+int noiseThreshold = 1000;
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// create a RoboEyes instance using an Adafruit_SSD1306 display driver
+RoboEyes<Adafruit_SSD1306> roboEyes(display); 
+
+
+void setup() {
+
+  pinMode(BUTTON_PIN, INPUT); 
+  pinMode(MIC_PIN, INPUT);
+
+  Serial.begin(9600);
+
+  // Startup OLED Display
+  // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3C or 0x3D
+    Serial.println(F("SSD1306 allocation failed"));
+    for(;;); // Don't proceed, loop forever
+  }
+
+  // Startup robo eyes
+  roboEyes.begin(SCREEN_WIDTH, SCREEN_HEIGHT, 100); // screen-width, screen-height, max framerate
+
+  // Define some automated eyes behaviour
+  //roboEyes.setAutoblinker(ON, 3, 2); // Start auto blinker animation cycle -> bool active, int interval, int variation -> turn on/off, set interval between each blink in full seconds, set range for random interval variation in full seconds
+  //roboEyes.setIdleMode(ON, 2, 2); // Start idle animation cycle (eyes looking in random directions) -> turn on/off, set interval between each eye repositioning in full seconds, set range for random time interval variation in full seconds
+  
+  // Define eye shapes, all values in pixels
+  //roboEyes.setWidth(36, 36); // byte leftEye, byte rightEye
+  //roboEyes.setHeight(36, 36); // byte leftEye, byte rightEye
+  //roboEyes.setBorderradius(8, 8); // byte leftEye, byte rightEye
+  //roboEyes.setSpacebetween(10); // int space -> can also be negative
+
+  // Cyclops mode
+  //roboEyes.setCyclops(ON); // bool on/off -> if turned on, robot has only on eye
+
+  // Define mood, curiosity and position
+  roboEyes.setMood(DEFAULT); // mood expressions, can be TIRED, ANGRY, HAPPY, DEFAULT
+  roboEyes.setPosition(DEFAULT); // cardinal directions, can be N, NE, E, SE, S, SW, W, NW, DEFAULT (default = horizontally and vertically centered)
+  roboEyes.setCuriosity(ON); // bool on/off -> when turned on, height of the outer eyes increases when moving to the very left or very right
+  roboEyes.setSweat(ON);
+  // Set horizontal or vertical flickering
+  //roboEyes.setHFlicker(ON, 2); // bool on/off, byte amplitude -> horizontal flicker: alternately displacing the eyes in the defined amplitude in pixels
+  //roboEyes.setVFlicker(ON, 2); // bool on/off, byte amplitude -> vertical flicker: alternately displacing the eyes in the defined amplitude in pixels
+
+  // Play prebuilt oneshot animations
+  //roboEyes.anim_confused(); // confused - eyes shaking left and right
+  roboEyes.anim_laugh(); // laughing - eyes shaking up and down
+  
+} // end of setup
+
+
+void loop() {
+  roboEyes.update(); // update eyes drawings
+
+  // --- 1. MICROPHONE LOGIC ---
+  // Only listen for noise if we are NOT currently scared (to prevent resetting the timer constantly)
+  if (!isScared) {
+    int currentVolume = getLoudness();
+
+    if (currentVolume > noiseThreshold) {
+      Serial.print("LOUD NOISE: ");
+      Serial.println(currentVolume);
+      
+      roboEyes.setMood(SCARY); 
+      isScared = true;
+      scareTimer = millis(); 
+    }
+  }
+
+  // Timer to calm down after 2 seconds
+  if (isScared && millis() - scareTimer > 2000) { 
+    Serial.println("Calming down...");
+    roboEyes.setMood(DEFAULT); 
+    isScared = false;
+  }
+
+  // --- 2. BUTTON LOGIC ---
+  touch.isPressed = isTouchPressed(BUTTON_PIN);
+
+  // FIX: Check if state changed AND the button is actually pressed (HIGH)
+  if (touch.wasPressed != touch.isPressed && touch.isPressed == HIGH) {
+    
+    Serial.println("Touch pressed");
+    count += 1;
+
+    // Reset count if it gets too high (Optional, keeps it cycling)
+    if (count > 5) count = 1; 
+
+    if (count == 1) {
+      roboEyes.setMood(HAPPY);
+      Serial.println("HAPPY");
+    } 
+    else if(count == 2) {
+      // Note: You had Happy twice in your code, assuming intended
+      roboEyes.setMood(TIRED);
+      Serial.println("TIRED");
+    } 
+    else if(count == 3) {
+      roboEyes.setMood(ANGRY);
+      Serial.println("ANGRY");
+    } 
+    else if(count == 4) {
+      roboEyes.setMood(FROZEN);
+      Serial.println("FROZEN");
+    } 
+    else {
+      roboEyes.setMood(SCARY);
+      Serial.println("SCARY");
+    }
+  }
+
+  // Update the previous state for the next loop
+  touch.wasPressed = touch.isPressed;
+}
+
+bool isTouchPressed(int pin) 
+{ 
+	 return digitalRead(pin) == HIGH; 
+} 
+
+// Function to calculate Peak-to-Peak Amplitude
+int getLoudness() {
+  unsigned long startMillis = millis(); 
+  unsigned int signalMax = 0;
+  unsigned int signalMin = 1024;
+  unsigned int sampleWindow = 50; // Listen for 50ms
+
+  // Collect data
+  while (millis() - startMillis < sampleWindow) {
+    int sample = analogRead(MIC_PIN);
+    
+    if (sample < 1024) {  
+      if (sample > signalMax) {
+        signalMax = sample;  
+      }
+      else if (sample < signalMin) {
+        signalMin = sample;  
+      }
+    }
+  }
+  // Return the difference between the highest and lowest reading
+  return signalMax - signalMin; 
+}
+
