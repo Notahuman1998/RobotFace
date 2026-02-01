@@ -13,6 +13,7 @@
 
 #include <Adafruit_SSD1306.h>
 #include <FluxGarage_RoboEyes.h>
+#include <RTClib.h>
 
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
 #define SCREEN_HEIGHT 64 // OLED display height, in pixels
@@ -39,6 +40,11 @@ bool isScared = false;
 // If it doesn't trigger, decrease it (e.g., 150).
 int noiseThreshold = 1000;
 
+// --- RTC CLOCK VARIABLES ---
+RTC_DS1307 rtc; 
+bool isSleeping = false;
+unsigned long wakeUpOverrideTimer = 0;
+
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 // create a RoboEyes instance using an Adafruit_SSD1306 display driver
@@ -57,6 +63,11 @@ void setup() {
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3C or 0x3D
     Serial.println(F("SSD1306 allocation failed"));
     for(;;); // Don't proceed, loop forever
+  }
+
+  // 4. Start Clock
+  if (!rtc.begin()) {
+    Serial.println("Couldn't find RTC");
   }
 
   // Startup robo eyes
@@ -93,6 +104,38 @@ void setup() {
 
 void loop() {
   roboEyes.update(); // update eyes drawings
+
+  DateTime now = rtc.now();
+  int currentHour = now.hour();
+
+  Serial.println("Current hour: ");
+  Serial.println(currentHour);
+  // --- TIME LOGIC ---
+  bool overrideActive = (millis() - wakeUpOverrideTimer < 10000);
+
+  // SLEEP between 11 PM (23) and 7 AM
+  if ((currentHour >= 23 || currentHour < 7) && !overrideActive && !isScared) {
+     if (!isSleeping) {
+       isSleeping = true;
+       roboEyes.setIdleMode(OFF);
+       roboEyes.setAutoblinker(OFF);
+     }
+     roboEyes.close(); 
+  }
+  // TIRED at 10 PM (22)
+  else if (currentHour == 22 && !overrideActive && !isScared) {
+     isSleeping = false;
+     roboEyes.setMood(TIRED);
+  }
+  // WAKE UP / NORMAL
+  else {
+     if (isSleeping) {
+       isSleeping = false;
+       roboEyes.setMood(HAPPY);
+       roboEyes.open();
+       roboEyes.setIdleMode(ON, 2, 2);
+     }
+  }
 
   // --- 1. MICROPHONE LOGIC ---
   // Only listen for noise if we are NOT currently scared (to prevent resetting the timer constantly)
