@@ -22,6 +22,7 @@
 
 const int BUTTON_PIN = 32;
 const int MIC_PIN = 35; // Connect MAX9814 OUT to 35
+const int VIBE_PIN = 18; // New Vibration Pin
 
 int count = 0;
 struct touchEvent { 
@@ -38,12 +39,15 @@ bool isScared = false;
 // For MAX9814, a clap usually creates a spike > 200 or 300.
 // If it triggers too easily, increase this number (e.g., 500).
 // If it doesn't trigger, decrease it (e.g., 150).
-int noiseThreshold = 1000;
+int noiseThreshold = 2000;
 
 // --- RTC CLOCK VARIABLES ---
 RTC_DS1307 rtc; 
 bool isSleeping = false;
 unsigned long wakeUpOverrideTimer = 0;
+
+// NEW: Master Override for "Work Mode"
+bool forceAwake = false;
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
@@ -55,8 +59,15 @@ void setup() {
 
   pinMode(BUTTON_PIN, INPUT); 
   pinMode(MIC_PIN, INPUT);
+  pinMode(VIBE_PIN, OUTPUT);
 
-  Serial.begin(9600);
+  Serial.begin(115200);
+
+  // *** FIX 1: SPEED UP THE SCREEN ***
+  // This makes the I2C bus run at 400kHz instead of 100kHz.
+  // This reduces the time the robot is "deaf" while drawing eyes.
+  Wire.begin();
+  Wire.setClock(400000);
 
   // Startup OLED Display
   // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
@@ -105,27 +116,52 @@ void setup() {
 void loop() {
   roboEyes.update(); // update eyes drawings
 
+  // --- 2. CHECK FOR SERIAL COMMANDS ("wake" / "sleep") ---
+  if (Serial.available() > 0) {
+    String command = Serial.readStringUntil('\n');
+    command.trim(); // Remove whitespace
+
+    if (command == "wake") {
+      forceAwake = true;
+      Serial.println("COMMAND: FORCE AWAKE! (Ignoring Time)");
+      // Optional: Visual feedback
+      roboEyes.setMood(HAPPY);
+      roboEyes.open();
+    }
+    else if (command == "sleep") { // Meaning "Return to Auto Routine"
+      forceAwake = false;
+      Serial.println("COMMAND: AUTO MODE (Checking Clock)");
+    }
+  }
+
   DateTime now = rtc.now();
   int currentHour = now.hour();
 
-  Serial.println("Current hour: ");
-  Serial.println(currentHour);
+  //Serial.println("Current hour: ");
+  //Serial.println(currentHour);
   // --- TIME LOGIC ---
   bool overrideActive = (millis() - wakeUpOverrideTimer < 10000);
 
-  // SLEEP between 11 PM (23) and 7 AM
-  if ((currentHour >= 23 || currentHour < 7) && !overrideActive && !isScared) {
+  // LOGIC: Sleep ONLY if:
+  // 1. It is Night Time (23-7)
+  // 2. AND we are NOT forced awake by Serial ("wake")
+  // 3. AND we are NOT forced awake by Button
+  // 4. AND we are NOT scared  
+  if ((currentHour >= 23 || currentHour < 7) && !forceAwake && !overrideActive && !isScared) {
      if (!isSleeping) {
        isSleeping = true;
        roboEyes.setIdleMode(OFF);
        roboEyes.setAutoblinker(OFF);
+       Serial.println("Status: Sleeping (Night Time)");
      }
      roboEyes.close(); 
+     
   }
   // TIRED at 10 PM (22)
   else if (currentHour == 22 && !overrideActive && !isScared) {
      isSleeping = false;
      roboEyes.setMood(TIRED);
+     Serial.println("Status: Tired (About Sleeping)");
   }
   // WAKE UP / NORMAL
   else {
@@ -134,6 +170,7 @@ void loop() {
        roboEyes.setMood(HAPPY);
        roboEyes.open();
        roboEyes.setIdleMode(ON, 2, 2);
+       Serial.println("Status: Waking Up");
      }
   }
 
@@ -148,7 +185,8 @@ void loop() {
       
       roboEyes.setMood(SCARY); 
       isScared = true;
-      scareTimer = millis(); 
+      scareTimer = millis();
+      vibrate(2); // NEW: Shake with fear! 
     }
   }
 
@@ -165,8 +203,13 @@ void loop() {
   // FIX: Check if state changed AND the button is actually pressed (HIGH)
   if (touch.wasPressed != touch.isPressed && touch.isPressed == HIGH) {
     
+    // *** NEW LINE: Tell the time logic to pause for 10 seconds ***
+    wakeUpOverrideTimer = millis();
+
     Serial.println("Touch pressed");
     count += 1;
+    Serial.println("Count:");
+    Serial.println(count);
 
     // Reset count if it gets too high (Optional, keeps it cycling)
     if (count > 5) count = 1; 
@@ -183,6 +226,7 @@ void loop() {
     else if(count == 3) {
       roboEyes.setMood(ANGRY);
       Serial.println("ANGRY");
+      vibrate(1); // NEW: Annoyed Buzz
     } 
     else if(count == 4) {
       roboEyes.setMood(FROZEN);
@@ -207,14 +251,18 @@ bool isTouchPressed(int pin)
 int getLoudness() {
   unsigned long startMillis = millis(); 
   unsigned int signalMax = 0;
-  unsigned int signalMin = 1024;
-  unsigned int sampleWindow = 50; // Listen for 50ms
+  unsigned int signalMin = 4095;
+
+  // *** FIX 2: SHORTER WINDOW ***
+  // Reduced from 50ms to 30ms. 
+  // This makes the loop repeat faster, so it feels more "responsive"
+  unsigned int sampleWindow = 30; // Listen for 30ms
 
   // Collect data
   while (millis() - startMillis < sampleWindow) {
     int sample = analogRead(MIC_PIN);
     
-    if (sample < 1024) {  
+    if (sample < 4095) {  
       if (sample > signalMax) {
         signalMax = sample;  
       }
@@ -227,3 +275,29 @@ int getLoudness() {
   return signalMax - signalMin; 
 }
 
+// pattern 1 = Short Buzz (Annoyed)
+// pattern 2 = Long Shake (Scared)
+// pattern 3 = Heartbeat (Love/Happy)
+void vibrate(int pattern) {
+  if (pattern == 1) {
+    digitalWrite(VIBE_PIN, HIGH);
+    delay(400);
+    digitalWrite(VIBE_PIN, LOW);
+  }
+  else if (pattern == 2) {
+    // Shaking Effect
+    for(int i=0; i<5; i++){
+      digitalWrite(VIBE_PIN, HIGH);
+      delay(250);
+      digitalWrite(VIBE_PIN, LOW);
+      delay(100);
+    }
+  }
+  else if (pattern == 3) {
+    // Heartbeat: Thump-Thump... Thump-Thump
+    digitalWrite(VIBE_PIN, HIGH); delay(150);
+    digitalWrite(VIBE_PIN, LOW);  delay(100);
+    digitalWrite(VIBE_PIN, HIGH); delay(150);
+    digitalWrite(VIBE_PIN, LOW);
+  }
+}
